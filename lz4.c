@@ -267,7 +267,7 @@ static const int LZ4r_minLength = (MFLIMIT+1);
 /*-************************************
 *  Error detection
 **************************************/
-//#define LZ4r_DEBUG 10  // added
+#define LZ4r_DEBUG 10  // added
 //#define CntMatchLength  // added
 #if defined(LZ4r_DEBUG) && (LZ4r_DEBUG>=1)
 #  include <assert.h>
@@ -937,7 +937,7 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
                  const int inputSize,
                  int*  inputConsumed, /* only written when outputDirective == fillOutput */
                  const int maxOutputSize, // Maximum size of the output buffer
-                 const limitedOutput_directive outputDirective, // Output directive, controls behavior on output buffer limits
+                 const limitedOutput_directive outputDirective, // Output directive, controls behavior on output buffer limits, tends to be 1,limitedOutput
                  const tableType_t tableType, // Hash table type (byU16, byU32, byPtr)
                  const dict_directive dictDirective, // Dictionary directive, specifies whether and how to use a dictionary
                  const dictIssue_directive dictIssue, // Dictionary issue directive, specifies if there are any special conditions for the dictionary
@@ -1016,10 +1016,12 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
     /* Main Loop */
     for ( ; ; ) {
         const BYTE* match;
-        BYTE* token;
+        BYTE *token1, *token2, *token3;
         const BYTE* filledIp;
-        BYTE l_flag=0, o_flag=0;
-        BYTE llml = 0; // 用于 literal length的3位改为用来和match length的3位一起表示match length的情况
+        // BYTE l_flag=0, o_flag=0;
+        // BYTE llml = 0; // 用于 literal length的3位改为用来和match length的3位一起表示match length的情况
+        // BYTE flag1=0, flag2=0, flag3=0, flag4=0; // flag1:token1最高位；flag2/flag3:token2最高两位；flag4:token3最高位
+        BYTE tl=1; // token数量
         /* Find a match */
         if (tableType == byPtr) {
             const BYTE* forwardIp = ip;
@@ -1114,39 +1116,60 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
 
         /* Encode Literals */
         {   unsigned const litLength = (unsigned)(ip - anchor);
-            token = op++;
+            token1 = op++;
+
+            unsigned off=ip - match, offsize = 1;
+            if(off < 256 && litLength < 16) tl = 1;
+            else if((off < 2048 && litLength < 128) || (!litLength && off < 32768)) tl = 2;
+            else if(off < 16384 && litLength < 1024) tl = 3;
+            else tl = 3, offsize++;
+
             if ((outputDirective == limitedOutput) &&  /* Check output buffer overflow */
-                (unlikely(op + litLength + (2 + 1 + LASTLITERALS) + (litLength/255) > olimit)) ) {
+                (unlikely(op + litLength + (offsize + tl + LASTLITERALS) > olimit)) ) {
                 return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
             }
-            // deal offsetsize
-            BYTE offsetsize=2;
-            if((!litLength && ip - match < 2048) || (litLength && ip - match < 256)){
-                offsetsize = 1;
-            }
-            if ((outputDirective == fillOutput) &&
-                (unlikely(op + (litLength+247)/255 /* litlen */ + litLength /* literals */ + offsetsize /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit))) {
-                op--;
-                goto _last_literals; 
-            }
-            if (litLength >= 8) { // 修改
-                unsigned len = litLength - 8;
-                *token = (7<<ML_BITS);
-                for(; len >= 255 ; len-=255) *op++ = 255;
-                *op++ = (BYTE)len;
-            }
-            else if(!litLength){
-                l_flag = 1;
-                *token = 128;
-            }else{
-                *token = (BYTE)((litLength-1)<<ML_BITS); // 压缩时必须减1，因为解压时会加1
-            }
+
+            if(tl >= 2) token2 = op++;
+            if(tl >= 3) token3 = op++;
             
+            if ((outputDirective == fillOutput)) {
+                if(unlikely(op + tl /* tokenlength */ + offsize + litLength /* literals */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit)) {
+                    op--;
+                    goto _last_literals; 
+                }
+            }
+            // write the litLength and flags into tokens
+
+            if(tl == 1){// A
+                *token1 = (BYTE)(litLength<<3); 
+            }else {
+                *token1 = 0x80;
+                if(tl == 2){
+                    if(litLength){// B
+                        *token1 |= (BYTE)litLength; 
+                        *token2 = 0;
+                    }else{// C
+                        *token2 = 0x80; 
+                    }
+                }else{ // D
+                    *token2 = 0xc0;
+                    if(off < 16384 && litLength < 1024){
+                        *token1 |= (BYTE)(litLength >> 3); // litLength的高7位放到token1的低7位
+                        *token3 = (BYTE)((litLength & 7) << 4); // litLength的低3位放到token3的flag后3位
+                    }else{
+                        *token3 = 0x80;
+                        *token1 |= (BYTE)(litLength >> 9);
+                        *token2 |= (BYTE)(litLength >> 3 & 0x3f);
+                        *token3 |= (BYTE)((litLength & 7) << 4);
+                    }
+                }
+            }
+                
             /* Copy Literals */
             LZ4r_wildCopy8(op, anchor, op+litLength);
             op+=litLength;
-            DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i l_flag=%u ",
-                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), l_flag);
+            DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i tl=%u off=%u offsize=%u",
+                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), tl, off, offsize);
         }
 
 _next_match:
@@ -1157,6 +1180,7 @@ _next_match:
          * - lowLimit : must be == dictionary to mean "match is within extDict"; must be == source otherwise
          * - token and *token : position to write 4-bits for match length; higher 4-bits for literal length supposed already written
          */
+        // - tl and flags.
         BYTE offsetsize=2;
         if((l_flag && ip - match < 2048) || (!l_flag && ip - match < 256)){
             offsetsize = 1;
