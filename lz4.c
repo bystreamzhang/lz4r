@@ -1258,11 +1258,21 @@ _next_match:
                 DEBUGLOG(6, "             with matchLength=%u", matchCode+MINMATCH);
             }
 
+            BYTE exml = 7; // at which match length must extend 
+            if(tl == 1)
+                exml = 7;
+            else if(tl == 2){
+                if((*token2) & 0x80 )
+                    exml = 63;
+                else
+                    exml = 15;
+            }else
+                exml = 15;
             if ((outputDirective) &&    /* Check output buffer overflow */
-                (unlikely(op + (1 + LASTLITERALS) + (matchCode+(llml?192:248))/255 > olimit)) ) {
+                (unlikely(op + (1 + LASTLITERALS) + (matchCode+(255-exml))/255 > olimit)) )  {
                 if (outputDirective == fillOutput) {
                     /* Match description too long : reduce it */
-                    U32 newMatchCode = (llml?63:7) /* in token */ - 1 /* to avoid needing a zero byte */ + ((U32)(olimit - op) - 1 - LASTLITERALS) * 255;
+                    U32 newMatchCode = exml /* in token */ - 1 /* to avoid needing a zero byte */ + ((U32)(olimit - op) - 1 - LASTLITERALS) * 255;
                     ip -= matchCode - newMatchCode;
                     assert(newMatchCode < matchCode);
                     matchCode = newMatchCode;
@@ -1284,23 +1294,28 @@ _next_match:
                     return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
                 }
             }
-            // 修改
-            if(matchCode < 7){
-                *token += (BYTE)(matchCode);
-            }else if(llml && matchCode < 63){
-                *token += matchCode & 7;
-                *token += (matchCode >> 3) << 4;
+            // write matchcode and extending ml
+            if(tl==1){
+                DEBUGLOG(9, " Test1: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                if(matchCode < exml)
+                    *token1 |= (BYTE)(matchCode);
+                else
+                    *token1 |= exml;
+            }else if(tl==2){
+                DEBUGLOG(9, " Test2: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                if(matchCode < exml)
+                    *token2 |= (BYTE)matchCode;
+                else
+                    *token2 |= exml;  
             }else{
-                if(llml){
-                    DEBUGLOG(8, "  Test!!!1:    token = %u", *token);
-                    *token &= 0x88;
-                    *token |= 0x77;
-                    DEBUGLOG(8, "  Test!!!2:    token = %u", *token);
-                    matchCode -= 63;
-                }else{
-                    *token += 7;
-                    matchCode -= 7;
-                }
+                DEBUGLOG(9, " Test3: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                if(matchCode < exml)
+                    *token3 |= (BYTE)matchCode;
+                else
+                    *token3 |= exml;  
+            }
+            if(matchCode >= exml){
+                matchCode -= exml;
                 LZ4r_write32(op, 0xFFFFFFFF);
                 while (matchCode >= 4*255) {
                     op+=4;
@@ -1310,7 +1325,6 @@ _next_match:
                 op += matchCode / 255;
                 *op++ = (BYTE)(matchCode % 255);
             }
-            DEBUGLOG(8, "  Test:    token = %u llml=%u", *token, llml);
         }
         /* Ensure we have enough space for the last literals. */
         assert(!(outputDirective == fillOutput && op + 1 + LASTLITERALS > olimit));
@@ -1335,8 +1349,35 @@ _next_match:
             match = LZ4r_getPosition(ip, cctx->hashTable, tableType);
             LZ4r_putPosition(ip, cctx->hashTable, tableType);
             if ( (match+LZ4r_DISTANCE_MAX >= ip)
-              && (LZ4r_read32(match) == LZ4r_read32(ip)) )
-            { token=op++; *token = 128; l_flag = 1; goto _next_match; }
+              && (LZ4r_read32(match) == LZ4r_read32(ip)) ) 
+            { 
+                // literal length = 0. Deal the flags, offsize, tl 
+                unsigned off=ip - match;
+                token1 = op++;
+                offsize = 1;
+                if(off < 256) tl = 1;
+                else if(off < 32768) tl = 2;
+                else tl = 3, offsize++;
+
+                if(tl >= 2) token2 = op++;
+                if(tl >= 3) token3 = op++;
+
+                if(tl == 1){// A
+                    *token1 = 0;
+                }else {
+                    *token1 = 0x80;
+                    if(tl == 2){
+                        // C
+                        *token2 = 0x80; 
+                    }else{ // D
+                        *token2 = 0xc0;
+                        *token3 = 0x80;
+                    }
+                }
+                DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i",
+                            (int)(anchor-(const BYTE*)source), 0, (int)(ip-(const BYTE*)source));
+                goto _next_match; 
+            }
 
         } else {   /* byU32, byU16 */
 
@@ -1373,10 +1414,29 @@ _next_match:
             if ( ((dictIssue==dictSmall) ? (matchIndex >= prefixIdxLimit) : 1)
               && (((tableType==byU16) && (LZ4r_DISTANCE_MAX == LZ4r_DISTANCE_ABSOLUTE_MAX)) ? 1 : (matchIndex+LZ4r_DISTANCE_MAX >= current))
               && (LZ4r_read32(match) == LZ4r_read32(ip)) ) {
-                token=op++;
-                //*token=0;
-                *token = 128; // 必须置l_flag=1
-                l_flag = 1; //这个也别忘了修改，下面跳转后会用到
+                // literal length = 0. Deal the flags, offsize, tl 
+                unsigned off=ip - match;
+                token1 = op++;
+                offsize = 1;
+                if(off < 256) tl = 1;
+                else if(off < 32768) tl = 2;
+                else tl = 3, offsize++;
+
+                if(tl >= 2) token2 = op++;
+                if(tl >= 3) token3 = op++;
+
+                if(tl == 1){// A
+                    *token1 = 0; // need to be init
+                }else {
+                    *token1 = 0x80;
+                    if(tl == 2){
+                        // C
+                        *token2 = 0x80; 
+                    }else{ // D
+                        *token2 = 0xc0;
+                        *token3 = 0x80;
+                    }
+                }
                 if (maybe_extMem) offset = current - matchIndex;
                 DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i",
                             (int)(anchor-(const BYTE*)source), 0, (int)(ip-(const BYTE*)source));
@@ -1392,29 +1452,40 @@ _next_match:
 _last_literals:
     /* Encode Last Literals */
     {   size_t lastRun = (size_t)(iend - anchor);
+        // offset = 0, ml = 0, only tokens and literal. Don't need to write offset into op. And there are no additional bytes for ll in my way.
+        BYTE tl = 1;
+        if(lastRun < 16) tl=1;
+        else if(lastRun < 128) tl = 2;
+        else tl = 3;
         if ( (outputDirective) &&  /* Check output buffer overflow */
-            (op + lastRun + 1 + ((lastRun+255-8)/255) > olimit)) { //这里把15改成8
+            (op + lastRun + tl > olimit)) { 
             if (outputDirective == fillOutput) {
                 /* adapt lastRun to fill 'dst' */
                 assert(olimit >= op);
-                lastRun  = (size_t)(olimit-op) - 1/*token*/;
-                lastRun -= (lastRun + 256 - 8) / 256;  /*additional length tokens*/
+                lastRun  = (size_t)(olimit-op) - tl/*token*/;
             } else {
                 assert(outputDirective == limitedOutput);
                 return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
             }
         }
         DEBUGLOG(6, "Final literal run : %i literals", (int)lastRun);
-        if (lastRun >= 8) {
-            size_t accumulator = lastRun - 8;
-            *op++ = 7 << ML_BITS;
-            for(; accumulator >= 255 ; accumulator-=255) *op++ = 255;
-            *op++ = (BYTE) accumulator;
-        } else {
-            if(lastRun){
-                *op++ = (BYTE)((lastRun-1)<<ML_BITS); // 压缩时减1
+        // write the flags and ll into tokens
+        //BYTE *token1;
+        if(tl == 1){// A
+            *op++ = lastRun; 
+        }else {
+            *op = 0x80;
+            if(tl == 2){
+                *op++ |= (BYTE)lastRun;
+                *op++ = 0;
             }else{
-                *op++ = 8 << ML_BITS; // 如果为0, l_flag=1
+                *op++ |= (BYTE)(lastRun >> 9);
+                
+                *op = 0xc0;
+                *op++ |= (BYTE)(lastRun >> 3 & 0x3f);
+
+                *op = 0x80;
+                *op++ |= (BYTE)((lastRun & 7) << 4);
             }
         }
         LZ4r_memcpy(op, anchor, lastRun);
