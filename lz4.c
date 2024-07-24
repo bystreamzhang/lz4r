@@ -1296,19 +1296,19 @@ _next_match:
             }
             // write matchcode and extending ml
             if(tl==1){
-                DEBUGLOG(9, " Test1: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                DEBUGLOG(9, " Test1: matchCode + MINMATCH=%u", matchCode + MINMATCH);
                 if(matchCode < exml)
                     *token1 |= (BYTE)(matchCode);
                 else
                     *token1 |= exml;
             }else if(tl==2){
-                DEBUGLOG(9, " Test2: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                DEBUGLOG(9, " Test2: matchCode + MINMATCH=%u", matchCode + MINMATCH);
                 if(matchCode < exml)
                     *token2 |= (BYTE)matchCode;
                 else
                     *token2 |= exml;  
             }else{
-                DEBUGLOG(9, " Test3: matchCode + MINMATCH=%lu", matchCode + MINMATCH);
+                DEBUGLOG(9, " Test3: matchCode + MINMATCH=%u", matchCode + MINMATCH);
                 if(matchCode < exml)
                     *token3 |= (BYTE)matchCode;
                 else
