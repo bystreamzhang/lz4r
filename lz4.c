@@ -1022,6 +1022,7 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
         // BYTE llml = 0; // 用于 literal length的3位改为用来和match length的3位一起表示match length的情况
         // BYTE flag1=0, flag2=0, flag3=0, flag4=0; // flag1:token1最高位；flag2/flag3:token2最高两位；flag4:token3最高位
         BYTE tl=1; // token数量
+        BYTE offsize=1; //offset字节数（1或2）
         /* Find a match */
         if (tableType == byPtr) {
             const BYTE* forwardIp = ip;
@@ -1118,7 +1119,8 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
         {   unsigned const litLength = (unsigned)(ip - anchor);
             token1 = op++;
 
-            unsigned off=ip - match, offsize = 1;
+            unsigned off=ip - match;
+            offsize = 1;
             if(off < 256 && litLength < 16) tl = 1;
             else if((off < 2048 && litLength < 128) || (!litLength && off < 32768)) tl = 2;
             else if(off < 16384 && litLength < 1024) tl = 3;
@@ -1168,8 +1170,9 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
             /* Copy Literals */
             LZ4r_wildCopy8(op, anchor, op+litLength);
             op+=litLength;
-            DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i tl=%u off=%u offsize=%u",
-                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), tl, off, offsize);
+            DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i tl=%u off=%u offsize=%u flags=(%u,%u,%u,%u)",
+                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), tl, off, offsize,
+                        (*token1)&0x80, tl>=2?(*token2)&0x80:3, tl>=2?(*token2)&0x40:3, tl>=3?(*token3)&0x80:3);
         }
 
 _next_match:
@@ -1180,15 +1183,15 @@ _next_match:
          * - lowLimit : must be == dictionary to mean "match is within extDict"; must be == source otherwise
          * - token and *token : position to write 4-bits for match length; higher 4-bits for literal length supposed already written
          */
-        // - tl and flags.
-        BYTE offsetsize=2;
-        if((l_flag && ip - match < 2048) || (!l_flag && ip - match < 256)){
-            offsetsize = 1;
-        }
+        // - tl and offsize
+        // - litLength and flags in tokens
         if ((outputDirective == fillOutput) &&
-            (op + offsetsize /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit)) {
+            (op + offsize /* offset */ + tl /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit)) {
             /* the match was too close to the end, rewind and go to last literals */
-            op = token;
+            //op = token;
+            if(tl==1)op = token1;
+            else if(tl==2)op = token2;
+            else op = token3;
             goto _last_literals;
         }
 
@@ -1196,36 +1199,41 @@ _next_match:
         if (maybe_extMem) {   /* static test */
             DEBUGLOG(6, "             with offset=%u  (ext if > %i)", offset, (int)(ip - (const BYTE*)source));
             assert(offset <= LZ4r_DISTANCE_MAX && offset > 0);
-            LZ4r_writeLE16(op, (U16)offset); op+=2;
+            if(offsize==2){
+                LZ4r_writeLE16(op, (U16)offset); 
+                op+=2;
+            }else{
+                *op = (BYTE)offset; 
+                op++;
+            }
         } else  {
             DEBUGLOG(6, "             with offset=%u  (same segment)", (U32)(ip - match));
             assert(ip-match <= LZ4r_DISTANCE_MAX);
             // LZ4r_writeLE16(op, (U16)(ip - match)); op+=2; // 修改
             const size_t off = ip - match;
-            DEBUGLOG(8, " Test: off=%lu l_flag=%u", off, l_flag);
-            if(l_flag){
-                if(off < 2048){
-                    *token |= 8; // o_flag=1
-                    *token += (off >> 8 & 7) << 4; // literal length的3位此时可以改成用于表示offset的高3位
-                    DEBUGLOG(8, " Test1: off=%lu", off);
-                    *op = off & 0xFF; op++;
-                    llml = 0;
-                }else{
-                    LZ4r_writeLE16(op, (U16)(off)); op+=2; 
-                    llml = 1; // literal length的3位可以改为用来和match length的3位一起表示match length
+            DEBUGLOG(8, " Test: off=%lu flags=(%u,%u,%u,%u)", off,
+                        (*token1)&0x80, tl>=2?(*token2)&0x80:3, tl>=2?(*token2)&0x40:3, tl>=3?(*token3)&0x80:3);
+            // write the offset, op is now at the byte right next to the tokens
+            if(tl==1){
+                DEBUGLOG(9, " Test1: off=%lu", off);
+                *op = off; op++;
+            }else if(tl==2){
+                DEBUGLOG(9, " Test2: off=%lu", off);
+                *op = off & 0xFF; op++;
+                if( (*token2) & 0x80 ){ // C, ll=0
+                    *token1 |= off >> 8;
+                }else{ // B
+                    *token2 |= off >> 8 << 4;
                 }
             }else{
-                if(off < 256){
-                    *token |= 8;
-                    DEBUGLOG(8, " Test2: off=%lu", off);
+                if(offsize == 1){
                     *op = off & 0xFF; op++;
-                    llml = 0;
+                    *token2 |= off >> 8;
                 }else{
-                    LZ4r_writeLE16(op, (U16)(off)); op+=2; 
-                    llml = 0;
+                    LZ4r_writeLE16(op, (U16)off); 
+                    op+=2;
                 }
             }
-            
         }
 
         /* Encode MatchLength */
