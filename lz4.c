@@ -1015,11 +1015,20 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
 
     /* Main Loop */
     for ( ; ; ) {
+        // the forwardH and ip should be right here.
         const BYTE* match;
         BYTE* token;
         const BYTE* filledIp;
-        BYTE l_flag=0, o_flag=0;
-        BYTE llml = 0; // 用于 literal length的3位改为用来和match length的3位一起表示match length的情况
+        unsigned matchCode; // matchCode是实际ml-4,由于有m_flag,处理时记得额外加减1。默认编码到token的低2位
+        unsigned litLength; // litLength是实际ll,由于有l_flag,处理时记得额外加减1。默认编码到token的低3~5位
+        size_t off; // off 是offset大小,主循环外定义的offset变量是只在maybe_extMem=1时使用的原有变量,我们不需要使用
+        /*
+        - l_flag：为1表示ll=0,反之非0
+        - m_flag：为1表示ml=0,反之非0
+        - o_flag：为1表示offset相对小，只需要额外一个字节；为0表示大，必须要额外两个字节，具体是大还是小要看l_flag和m_flag的值
+        */
+        BYTE l_f=0, m_f=0, o_f=0;
+
         /* Find a match */
         if (tableType == byPtr) {
             const BYTE* forwardIp = ip;
@@ -1111,104 +1120,24 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
         if ((match > lowLimit) && unlikely(ip[-1] == match[-1])) {
             do { ip--; match--; } while (((ip > anchor) & (match > lowLimit)) && (unlikely(ip[-1] == match[-1])));
         }
+        // deal the off, ll and l_flag
+        off = ip - match;
+        litLength = (unsigned)(ip - anchor);
+        l_f = litLength?0:1;
 
-        /* Encode Literals */
-        {   unsigned const litLength = (unsigned)(ip - anchor);
-            token = op++;
-            if ((outputDirective == limitedOutput) &&  /* Check output buffer overflow */
-                (unlikely(op + litLength + (2 + 1 + LASTLITERALS) + (litLength/255) > olimit)) ) {
-                return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
-            }
-            // deal offsetsize
-            BYTE offsetsize=2;
-            if((!litLength && ip - match < 2048) || (litLength && ip - match < 256)){
-                offsetsize = 1;
-            }
-            if ((outputDirective == fillOutput) &&
-                (unlikely(op + (litLength+247)/255 /* litlen */ + litLength /* literals */ + offsetsize /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit))) {
-                op--;
-                goto _last_literals; 
-            }
-            if (litLength >= 8) { // 修改
-                unsigned len = litLength - 8;
-                *token = (7<<ML_BITS);
-                for(; len >= 255 ; len-=255) *op++ = 255;
-                *op++ = (BYTE)len;
-            }
-            else if(!litLength){
-                l_flag = 1;
-                *token = 128;
-            }else{
-                *token = (BYTE)((litLength-1)<<ML_BITS); // 压缩时必须减1，因为解压时会加1
-            }
-            
-            /* Copy Literals */
-            LZ4r_wildCopy8(op, anchor, op+litLength);
-            op+=litLength;
-            DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i l_flag=%u ",
-                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), l_flag);
-        }
-
+//the Test next position part may goto here
 _next_match:
         /* at this stage, the following variables must be correctly set :
          * - ip : at start of LZ operation
          * - match : at start of previous pattern occurrence; can be within current prefix, or within extDict
          * - offset : if maybe_ext_memSegment==1 (constant)
          * - lowLimit : must be == dictionary to mean "match is within extDict"; must be == source otherwise
-         * - token and *token : position to write 4-bits for match length; higher 4-bits for literal length supposed already written
          */
-        BYTE offsetsize=2;
-        if((l_flag && ip - match < 2048) || (!l_flag && ip - match < 256)){
-            offsetsize = 1;
-        }
-        if ((outputDirective == fillOutput) &&
-            (op + offsetsize /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit)) {
-            /* the match was too close to the end, rewind and go to last literals */
-            op = token;
-            goto _last_literals;
-        }
+        // - off, litLength and l_flag
 
-        /* Encode Offset */
-        if (maybe_extMem) {   /* static test */
-            DEBUGLOG(6, "             with offset=%u  (ext if > %i)", offset, (int)(ip - (const BYTE*)source));
-            assert(offset <= LZ4r_DISTANCE_MAX && offset > 0);
-            LZ4r_writeLE16(op, (U16)offset); op+=2;
-        } else  {
-            DEBUGLOG(6, "             with offset=%u  (same segment)", (U32)(ip - match));
-            assert(ip-match <= LZ4r_DISTANCE_MAX);
-            // LZ4r_writeLE16(op, (U16)(ip - match)); op+=2; // 修改
-            const size_t off = ip - match;
-            DEBUGLOG(8, " Test: off=%lu l_flag=%u", off, l_flag);
-            if(l_flag){
-                if(off < 2048){
-                    *token |= 8; // o_flag=1
-                    *token += (off >> 8 & 7) << 4; // literal length的3位此时可以改成用于表示offset的高3位
-                    DEBUGLOG(8, " Test1: off=%lu", off);
-                    *op = off & 0xFF; op++;
-                    llml = 0;
-                }else{
-                    LZ4r_writeLE16(op, (U16)(off)); op+=2; 
-                    llml = 1; // literal length的3位可以改为用来和match length的3位一起表示match length
-                }
-            }else{
-                if(off < 256){
-                    *token |= 8;
-                    DEBUGLOG(8, " Test2: off=%lu", off);
-                    *op = off & 0xFF; op++;
-                    llml = 0;
-                }else{
-                    LZ4r_writeLE16(op, (U16)(off)); op+=2; 
-                    llml = 0;
-                }
-            }
-            
-        }
-
-        /* Encode MatchLength */
-        {   unsigned matchCode;
-
+        {   // deal the matchCode, the ip will move on
             if ( (dictDirective==usingExtDict || dictDirective==usingDictCtx)
-              && (lowLimit==dictionary) /* match within extDict */ ) {
+                && (lowLimit==dictionary) /* match within extDict */ ) {
                 const BYTE* limit = ip + (dictEnd-match);
                 assert(dictEnd > match);
                 if (limit > matchlimit) limit = matchlimit;
@@ -1227,19 +1156,19 @@ _next_match:
             }
 
             if ((outputDirective) &&    /* Check output buffer overflow */
-                (unlikely(op + (1 + LASTLITERALS) + (matchCode+(llml?192:248))/255 > olimit)) ) {
+                (unlikely(op + (1 + LASTLITERALS) + (matchCode+((l_f && off>=2048)?223:251))/255 > olimit)) ) {
                 if (outputDirective == fillOutput) {
                     /* Match description too long : reduce it */
-                    U32 newMatchCode = (llml?63:7) /* in token */ - 1 /* to avoid needing a zero byte */ + ((U32)(olimit - op) - 1 - LASTLITERALS) * 255;
+                    U32 newMatchCode = ((l_f && off>=2048)?32:4) /* in token */ - 1 /* to avoid needing a zero byte */ + ((U32)(olimit - op) - 1 - LASTLITERALS) * 255;
                     ip -= matchCode - newMatchCode;
                     assert(newMatchCode < matchCode);
                     matchCode = newMatchCode;
                     if (unlikely(ip <= filledIp)) {
                         /* We have already filled up to filledIp so if ip ends up less than filledIp
-                         * we have positions in the hash table beyond the current position. This is
-                         * a problem if we reuse the hash table. So we have to remove these positions
-                         * from the hash table.
-                         */
+                            * we have positions in the hash table beyond the current position. This is
+                            * a problem if we reuse the hash table. So we have to remove these positions
+                            * from the hash table.
+                            */
                         const BYTE* ptr;
                         DEBUGLOG(5, "Clearing %u positions", (U32)(filledIp - ip));
                         for (ptr = ip; ptr <= filledIp; ++ptr) {
@@ -1252,33 +1181,116 @@ _next_match:
                     return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
                 }
             }
-            // 修改
-            if(matchCode < 7){
-                *token += (BYTE)(matchCode);
-            }else if(llml && matchCode < 63){
-                *token += matchCode & 7;
-                *token += (matchCode >> 3) << 4;
+        }
+        // Deal the m_flag, o_flag
+        m_f = matchCode?0:1;
+        if(!l_f){
+            if(!m_f){
+                o_f = (off >= 256)?0:1;
             }else{
-                if(llml){
-                    DEBUGLOG(8, "  Test!!!1:    token = %u", *token);
-                    *token &= 0x88;
-                    *token |= 0x77;
-                    DEBUGLOG(8, "  Test!!!2:    token = %u", *token);
-                    matchCode -= 63;
+                o_f = (off >= 2048)?0:1;
+            }
+        }else{
+            if(!m_f){
+                o_f = (off >= 2048)?0:1;
+            }else{
+                o_f = (off >= 8192)?0:1;
+            }
+        }
+        // Init token and encode Flags
+        token = op++;
+        *token = ((l_f<<2)|(m_f<<1)|o_f)<<5;
+
+        /* Encode Literals */
+        {       
+            if ((outputDirective == limitedOutput) &&  /* Check output buffer overflow */
+                (unlikely(op + litLength + (2 + 1 + LASTLITERALS) + (litLength/255) > olimit)) ) {
+                return 0;   /* cannot compress within `dst` budget. Stored indexes in hash table are nonetheless fine */
+            }
+            if ((outputDirective == fillOutput) &&
+                (unlikely(op + (litLength+247)/255 /* litlen */ + litLength /* literals */ + 1 /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit))) {
+                // 这里的情况应该是ml和offset都为0
+                op--;
+                goto _last_literals; 
+            }
+            BYTE ext = (m_f && !o_f)?32:8;
+            if (litLength >= ext) { 
+                unsigned len = litLength - ext;
+                if(ext == 32){
+                    *token |= 31;
                 }else{
-                    *token += 7;
-                    matchCode -= 7;
+                    *token |= (7<<2);
+                }
+                for(; len >= 255 ; len-=255) *op++ = 255;
+                *op++ = (BYTE)len;
+            }
+            else if(litLength){
+                *token |= (BYTE)((litLength-1)<<2); // 压缩时必须减1，因为解压时会加1
+            }
+            
+            /* Copy Literals */
+            LZ4r_wildCopy8(op, anchor, op+litLength);
+            op+=litLength;
+            DEBUGLOG(6, "Encode Literals over. seq.start:%i, literals=%u, match.start:%i l_f=%u ",
+                        (int)(anchor-(const BYTE*)source), litLength, (int)(ip-(const BYTE*)source), l_f);
+        }
+        
+        if ((outputDirective == fillOutput) &&
+            (op + 1 /* offset */ + 1 /* token */ + MFLIMIT - MINMATCH /* min last literals so last match is <= end - MFLIMIT */ > olimit)) {
+            /* the match was too close to the end, rewind and go to last literals */
+            op = token;
+            goto _last_literals;
+        }
+
+        /* Encode Offset */
+        if (maybe_extMem) {   /* static test */
+            // ignored this situation for now (20240726)
+            DEBUGLOG(6, "             with offset=%u  (ext if > %i)", offset, (int)(ip - (const BYTE*)source));
+            assert(offset <= LZ4r_DISTANCE_MAX && offset > 0);
+            LZ4r_writeLE16(op, (U16)offset); op+=2;
+        } else  {
+            DEBUGLOG(6, "             with offset=%u  (same segment)", (U32)(ip - match));
+            assert(ip-match <= LZ4r_DISTANCE_MAX);
+            DEBUGLOG(8, " Test: off=%lu l_f=%u", off, l_f);
+
+            if(!o_f){
+                DEBUGLOG(9, " Test1: off=%lu", off);
+                LZ4r_writeLE16(op, (U16)(off)); op+=2; 
+            }else{
+                DEBUGLOG(9, " Test2: off=%lu", off);
+                if(l_f){
+                    if(m_f)
+                        *token |= (off >> 8 & 0x1f);
+                    else
+                        *token |= (off >> 8 & 7) << 2;
+                }else if(m_f)
+                    *token |= off >> 8 & 3;
+                *op++ = off & 0xff;
+            }   
+        }
+
+        /* Encode MatchLength */
+        {   
+            BYTE ext = (l_f && !o_f)?32:4;
+            if (matchCode >= ext) { 
+                unsigned len = matchCode - ext;
+                if(ext == 32){
+                    *token |= 31;
+                }else{
+                    *token |= 3;
                 }
                 LZ4r_write32(op, 0xFFFFFFFF);
-                while (matchCode >= 4*255) {
+                while (len >= 4*255) {
                     op+=4;
                     LZ4r_write32(op, 0xFFFFFFFF);
-                    matchCode -= 4*255;
+                    len -= 4*255;
                 }
-                op += matchCode / 255;
-                *op++ = (BYTE)(matchCode % 255);
+                op += len / 255;
+                *op++ = (BYTE)(len % 255);
+            }else if(matchCode){
+                *token |= (BYTE)(matchCode-1); // 压缩时必须减1，因为解压时会加1
             }
-            DEBUGLOG(8, "  Test:    token = %u llml=%u", *token, llml);
+            DEBUGLOG(8, " Encode MatchLength over. Test:  token = %u l_f=%u m_f=%u o_f=%u", *token, l_f, m_f, o_f);
         }
         /* Ensure we have enough space for the last literals. */
         assert(!(outputDirective == fillOutput && op + 1 + LASTLITERALS > olimit));
@@ -1304,7 +1316,13 @@ _next_match:
             LZ4r_putPosition(ip, cctx->hashTable, tableType);
             if ( (match+LZ4r_DISTANCE_MAX >= ip)
               && (LZ4r_read32(match) == LZ4r_read32(ip)) )
-            { token=op++; *token = 128; l_flag = 1; goto _next_match; }
+            { 
+                // 直接匹配成功，ll=0
+                litLength = 0;
+                off = ip - match;
+                l_f = 1;
+                goto _next_match; 
+            }
 
         } else {   /* byU32, byU16 */
 
@@ -1341,13 +1359,12 @@ _next_match:
             if ( ((dictIssue==dictSmall) ? (matchIndex >= prefixIdxLimit) : 1)
               && (((tableType==byU16) && (LZ4r_DISTANCE_MAX == LZ4r_DISTANCE_ABSOLUTE_MAX)) ? 1 : (matchIndex+LZ4r_DISTANCE_MAX >= current))
               && (LZ4r_read32(match) == LZ4r_read32(ip)) ) {
-                token=op++;
-                //*token=0;
-                *token = 128; // 必须置l_flag=1
-                l_flag = 1; //这个也别忘了修改，下面跳转后会用到
+                litLength = 0;
+                off = ip - match;
+                l_f = 1;
                 if (maybe_extMem) offset = current - matchIndex;
-                DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i",
-                            (int)(anchor-(const BYTE*)source), 0, (int)(ip-(const BYTE*)source));
+                DEBUGLOG(6, "seq.start:%i, literals=%u, match.start:%i, off=%lu ",
+                            (int)(anchor-(const BYTE*)source), 0, (int)(ip-(const BYTE*)source), off);
                 goto _next_match;
             }
         }
@@ -1359,9 +1376,10 @@ _next_match:
 
 _last_literals:
     /* Encode Last Literals */
-    {   size_t lastRun = (size_t)(iend - anchor);
+    {   // Last Literal : ml=0, offset=0,ll!=0 (011). ml low 2 bit -> offset, ll extends when =8
+        size_t lastRun = (size_t)(iend - anchor);
         if ( (outputDirective) &&  /* Check output buffer overflow */
-            (op + lastRun + 1 + ((lastRun+255-8)/255) > olimit)) { //这里把15改成8
+            (op + lastRun + 1 + ((lastRun+247)/255) > olimit)) {
             if (outputDirective == fillOutput) {
                 /* adapt lastRun to fill 'dst' */
                 assert(olimit >= op);
@@ -1373,17 +1391,15 @@ _last_literals:
             }
         }
         DEBUGLOG(6, "Final literal run : %i literals", (int)lastRun);
+        assert(lastRun > 0);
+        *op = 0x60; // flags:011
         if (lastRun >= 8) {
             size_t accumulator = lastRun - 8;
-            *op++ = 7 << ML_BITS;
+            *op++ |= 7 << 2;
             for(; accumulator >= 255 ; accumulator-=255) *op++ = 255;
             *op++ = (BYTE) accumulator;
         } else {
-            if(lastRun){
-                *op++ = (BYTE)((lastRun-1)<<ML_BITS); // 压缩时减1
-            }else{
-                *op++ = 8 << ML_BITS; // 如果为0, l_flag=1
-            }
+            *op++ = (BYTE)((lastRun-1) << 2); // -1 when compressing
         }
         LZ4r_memcpy(op, anchor, lastRun);
         ip = anchor + lastRun;
@@ -1950,18 +1966,27 @@ LZ4r_decompress_unsafe_generic(
     while (1) {
         /* start new sequence */
         unsigned token = *ip++;
-        size_t l_flag = 0;
+        BYTE l_f = 0, m_f = 0, o_f = 0;
         size_t offset = 0;
+        l_f = (token & 0x80 > 0)?1:0;
+        m_f = (token & 0x40 > 0)?1:0;
+        o_f = (token & 0x20 > 0)?1:0;
+
         /* literals */
-        {   size_t ll = token >> ML_BITS;
-            l_flag = ll >> 3 & 1;
-            if(!l_flag){
-                ll = (ll & 7) + 1;
-            }else{
-                offset = ll & 7;
+        {   size_t ll;
+            BYTE ext=8;
+            if(l_f){
                 ll = 0;
+            }else{
+                if(m_f && !o_f){
+                    ll = (token & 0x1f) + 1;
+                    ext = 32;
+                }else{
+                    ll = (token >> 2 & 7) + 1;
+                }
             }
-            if (ll==8) {
+
+            if (ll==ext) {
                 /* long literal length */
                 ll += read_long_length_no_check(&ip);
             }
@@ -1976,6 +2001,8 @@ LZ4r_decompress_unsafe_generic(
                  * last match must start at least MFLIMIT==12 bytes before end of output block */
                 return -1;
         }   }
+        // offset
+        
 
         /* match */
         {   size_t ml = token & 15;
@@ -1983,7 +2010,7 @@ LZ4r_decompress_unsafe_generic(
             ml = ml & 7;
             if(!o_flag){
                 if(offset){
-                    ml += offset << 3;  // literal length的3位改为用来和match length的3位一起表示match length，可表示范围提升到63（2^6 - 1）
+                    ml += offset << 3;  // literal length 3 bit -> match length�?3位一起表示match length，可表示范围提升�?63�?2^6 - 1�?
                 }
                 offset = LZ4r_readLE16(ip);
                 ip+=2;
@@ -2133,7 +2160,7 @@ LZ4r_decompress_generic(
 
 
         /* Set up the "end" pointers for the shortcut. */
-        const BYTE* shortiend = iend - 14 /*maxLL*/ - 2 /*offset*/; // 这里计算不对，后面再改
+        const BYTE* shortiend = iend - 14 /*maxLL*/ - 2 /*offset*/; // 这里计算不对，后面再�?
         const BYTE* shortoend = oend - 14 /*maxLL*/ - 10 /*maxML*/;
 
         const BYTE* match;
@@ -2264,7 +2291,7 @@ LZ4r_decompress_generic(
                         assert(match >= lowPrefix);
                         assert(match <= op);
                         assert(op + (llml?66:10) <= oend);
-                        // 本来是0-14，copy 14+4=18位,现在是0-6或0-62,copy 10或66位
+                        // 本来�?0-14，copy 14+4=18�?,现在�?0-6�?0-62,copy 10�?66�?
                         if(!llml){
                             LZ4r_memcpy(op + 0, match + 0, 8); 
                             LZ4r_memcpy(op + 8, match + 8, 2);
@@ -2373,7 +2400,7 @@ LZ4r_decompress_generic(
             }
             */
             
-            //const BYTE* shortoend = oend - 7 /*maxLL*/ -(llml?66:10) /*maxML*/;  // 如果llml为1则10要改成66
+            //const BYTE* shortoend = oend - 7 /*maxLL*/ -(llml?66:10) /*maxML*/;  // 如果llml�?1�?10要改�?66
             const BYTE* shortoend = oend - 7 /*maxLL*/ - 10 /*maxML*/; 
             DEBUGLOG(7, "blockPos%6u: litLength token = %u l_flag = %u token = %u ", (unsigned)(op-(BYTE*)dst), (unsigned)length, (unsigned)l_flag, (unsigned)token);
 
@@ -2391,7 +2418,7 @@ LZ4r_decompress_generic(
                 /* strictly "less than" on input, to re-enter the loop with at least one byte */
               && likely((ip < shortiend) & (op <= shortoend)) ) {
                 /* Copy the literals */
-                LZ4r_memcpy(op, ip, 8); // 这种地方可以多copy但绝不能少copy。这里16->8
+                LZ4r_memcpy(op, ip, 8); // 这种地方可以多copy但绝不能少copy。这�?16->8
                 op += length; 
                 ip += length;
 
@@ -2432,7 +2459,7 @@ LZ4r_decompress_generic(
                   && (dict==withPrefix64k || match >= lowPrefix) ) {
                     DEBUGLOG(8, "Test ^^^: length + MINMATCH= %u llml=%u", (unsigned)(cpy-op), (unsigned)llml);
                     /* Copy the match. */
-                    // 本来是0-14，copy 14+4=18位,现在是0-6或0-62,copy 10或66位
+                    // 本来�?0-14，copy 14+4=18�?,现在�?0-6�?0-62,copy 10�?66�?
                     if(!llml){
                         LZ4r_memcpy(op + 0, match + 0, 8); 
                         LZ4r_memcpy(op + 8, match + 8, 2);
