@@ -33,15 +33,15 @@
    - LZ4r public forum : https://groups.google.com/forum/#!forum/lz4c
 */
 
-#ifndef LZ4rFRAME_STATIC_H_0398209384
-#define LZ4rFRAME_STATIC_H_0398209384
+#ifndef LZ4FRAME_STATIC_H_0398209384
+#define LZ4FRAME_STATIC_H_0398209384
 
 /* The declarations that formerly were made here have been merged into
- * lz4frame.h, protected by the LZ4rF_STATIC_LINKING_ONLY macro. Going forward,
+ * lz4frame.h, protected by the LZ4F_STATIC_LINKING_ONLY macro. Going forward,
  * it is recommended to simply include that header directly.
  */
 
-#define LZ4rF_STATIC_LINKING_ONLY
+#define LZ4F_STATIC_LINKING_ONLY
 #include "lz4frame.h"
 
-#endif /* LZ4rFRAME_STATIC_H_0398209384 */
+#endif /* LZ4FRAME_STATIC_H_0398209384 */

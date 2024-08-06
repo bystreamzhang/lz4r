@@ -106,7 +106,7 @@ extern "C" {
  *  - It requires the following macros to be defined:
  *    LZ4r_memcpy, LZ4r_memmove, LZ4r_memset.
  *  - It only enables LZ4r/HC functions which don't use heap.
- *    All LZ4rF_* functions are not supported.
+ *    All LZ4F_* functions are not supported.
  *  - See tests/freestanding.c to check its basic setup.
  */
 #if defined(LZ4r_FREESTANDING) && (LZ4r_FREESTANDING == 1)

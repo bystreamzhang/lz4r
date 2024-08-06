@@ -60,7 +60,7 @@ Otherwise, dependent application may fail on API or ABI break in the future.
 The associated symbols are also not exposed by the dynamic library by default.
 Should they be nonetheless needed, it's possible to force their publication
 by using build macros `LZ4r_PUBLISH_STATIC_FUNCTIONS`
-and `LZ4rF_PUBLISH_STATIC_FUNCTIONS`.
+and `LZ4F_PUBLISH_STATIC_FUNCTIONS`.
 
 
 #### Build macros
@@ -130,7 +130,7 @@ The following build macro can be selected to adjust source code behavior at comp
   in stack (0), or in heap (1:default).
   Since workspace is rather large, stack can be inconvenient, hence heap mode is recommended.
 
-- `LZ4rF_HEAPMODE` : selects how `LZ4rF_compressFrame()` allocates the compression state,
+- `LZ4F_HEAPMODE` : selects how `LZ4F_compressFrame()` allocates the compression state,
   either on stack (default, value 0) or using heap memory (value 1).
 
 
