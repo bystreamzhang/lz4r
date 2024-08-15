@@ -2184,6 +2184,8 @@ LZ4r_decompress_generic(
         const BYTE* shortoend = oend - 14 /*maxLL*/ - 10 /*maxML*/;
 
         const BYTE* match;
+        BYTE extml;
+        BYTE ext;
         size_t offset;
         unsigned token;
         size_t length;
@@ -2221,7 +2223,7 @@ LZ4r_decompress_generic(
             l_f = (token & 0x80)?1:0;
             m_f = (token & 0x40)?1:0;
             o_f = (token & 0x20)?1:0;
-            BYTE ext=8;
+            ext=8;
             if(l_f){
                 length = 0;
             }else{
@@ -2289,7 +2291,7 @@ LZ4r_decompress_generic(
             assert(match <= op);  /* overflow check */
 
             /* get matchlength */
-            BYTE extml=4;
+            extml=4;
             if(m_f){
                 length = 0;
             }else{
@@ -2397,12 +2399,13 @@ LZ4r_decompress_generic(
         /* Main Loop : decode remaining sequences where output < FASTLOOP_SAFE_DISTANCE */
         DEBUGLOG(6, "using safe decode loop");
         while (1) {
+            
             assert(ip < iend);
             token = *ip++;
             l_f = (token & 0x80)?1:0;
             m_f = (token & 0x40)?1:0;
             o_f = (token & 0x20)?1:0;
-            BYTE ext=8;
+            ext=8;
             if(l_f){
                 length = 0;
             }else{
@@ -2414,6 +2417,7 @@ LZ4r_decompress_generic(
                 }
             }
             const BYTE* shortiend = iend - (ext-1) /*maxLL*/ - (o_f?1:2) /*offset*/;
+            //const BYTE* shortiend = iend - 7 /*maxLL*/ - (o_f?1:2) /*offset*/;
             /*
             const BYTE* ip_t = (const BYTE*)(ip + length);
             if(l_flag){
@@ -2435,8 +2439,11 @@ LZ4r_decompress_generic(
             }
             */
             
-            //const BYTE* shortoend = oend - 7 /*maxLL*/ -(llml?66:10) /*maxML*/;  // 如果llml�?1�?10要改�?66
-            const BYTE* shortoend = oend - (ext-1) /*maxLL*/ - ((l_f&&!m_f&&!o_f)?35:7) /*maxML, 31+4, 3+4*/; 
+            //const BYTE* shortoend = oend - 7 /*maxLL*/ -(llml?66:10) /*maxML*/;  
+            const BYTE* shortoend = oend - (ext-1) /*maxLL*/ - ((l_f&&!m_f&&!o_f)?35:7) /*maxML, 31+4, 3+4*/ /*maxML, 3+4*/; 
+            DEBUGLOG(8, "ip=0x%x op=0x%x iend=0x%x ", (unsigned)ip, (unsigned)op, (unsigned)iend);
+            DEBUGLOG(8, "blockPos%6u: shortiend = 0x%x , shortoend = 0x%x ",(unsigned)(op-(BYTE*)dst), (unsigned)shortiend, (unsigned)shortoend);
+
             DEBUGLOG(7, "blockPos%6u: litLength token = %u l_flag = %u token = %u ", (unsigned)(op-(BYTE*)dst), (unsigned)length, (unsigned)l_f, (unsigned)token);
 
             /* A two-stage shortcut for the most common case:
@@ -2448,7 +2455,7 @@ LZ4r_decompress_generic(
              * those 18 bytes earlier, upon entering the shortcut (in other words,
              * there is a combined check for both stages).
              */
-            DEBUGLOG(8, "Test blockPos%6u: shortiend - ip = %d , shortoend - op = %d ", (unsigned)(op-(BYTE*)dst), (int)(ip-shortiend), (int)(op-shortoend));
+            DEBUGLOG(8, "Test blockPos%6u: shortiend - ip = %d , shortoend - op = %d ", (unsigned)(op-(BYTE*)dst), (int)(shortiend-ip), (int)(shortoend-op));
             if ( (length != ext) // ll must less than ext
                 /* strictly "less than" on input, to re-enter the loop with at least one byte */
               && likely((ip < shortiend) & (op <= shortoend)) ) {
@@ -2483,7 +2490,7 @@ LZ4r_decompress_generic(
                     ip++;
                 }
                 /* get matchlength */
-                BYTE extml=4;
+                extml=4;
                 if(m_f){
                     length = 0;
                 }else{
@@ -2497,7 +2504,8 @@ LZ4r_decompress_generic(
                 #if defined(CntMatchLength)// can be deleted, just for testing
                     if(length < 63){ mlcnt[0] ++;}else if(length < 318){mlcnt[1] ++;}else if(length < 573){mlcnt[2] ++;}else{mlcnt[3] ++;}
                 #endif
-                DEBUGLOG(7, "blockPos%6u: matchLength token = %u (len=%u)", (unsigned)(op-(BYTE*)dst), (unsigned)length, (unsigned)length + 4);
+
+                
                 //offset = LZ4r_readLE16(ip); ip += 2;
                 match = op - offset;
                 assert(match <= op); /* check overflow */
@@ -2506,6 +2514,7 @@ LZ4r_decompress_generic(
                 if ( (length != extml)
                   && (offset >= 8)
                   && (dict==withPrefix64k || match >= lowPrefix) ) {
+                    DEBUGLOG(7, "blockPos%6u: matchLength token = %u (len=%u)", (unsigned)(op-(BYTE*)dst), (unsigned)length, (unsigned)length + 4);
                     DEBUGLOG(8, "Test ^^^: length + MINMATCH= %u ", (unsigned)(cpy-op));
                     /* Copy the match. */
                     LZ4r_memcpy(op + 0, match + 0, extml); 
@@ -2514,7 +2523,7 @@ LZ4r_decompress_generic(
                     /* Both stages worked, load the next token. */
                     continue;
                 }
-
+                DEBUGLOG(7, "blockPos%6u: matchLength extends.",(unsigned)(op-(BYTE*)dst));
                 /* The second stage didn't work out, but the info is ready.
                  * Propel it right to the point of match copying. */
                 goto _copy_match;
@@ -2625,7 +2634,7 @@ LZ4r_decompress_generic(
             DEBUGLOG(7, "offset = %lu", offset);
             match = op - offset;
             /* get matchlength */
-            BYTE extml=4;
+            extml=4;
             if(m_f){
                 length = 0;
             }else{
@@ -2642,7 +2651,7 @@ LZ4r_decompress_generic(
                 size_t const addl = read_variable_length(&ip, iend - LASTLITERALS + 1, 0);
                 if (addl == rvl_error) { goto _output_error; }
                 length += addl;
-                DEBUGLOG(8, "Test: length = %u", (unsigned)length);
+                DEBUGLOG(8, "Test: matchlength = %u", (unsigned)length);
                 if (unlikely((uptrval)(op)+length<(uptrval)op)) goto _output_error;   /* overflow detection */
             }
             length += MINMATCH;
@@ -2653,7 +2662,7 @@ LZ4r_decompress_generic(
 #if LZ4r_FAST_DEC_LOOP
         safe_match_copy:
 #endif
-            DEBUGLOG(7, "Test: lowPrefix - match = %d", (int)(lowPrefix - match));
+            DEBUGLOG(8, "Test: lowPrefix - match = %d", (int)(lowPrefix - match));
             if ((checkOffset) && (unlikely(match + dictSize < lowPrefix))) goto _output_error;   /* Error : offset outside buffers */
             /* match starting within external dictionary */
             if ((dict==usingExtDict) && (match < lowPrefix)) {
