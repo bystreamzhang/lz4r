@@ -267,7 +267,7 @@ static const int LZ4r_minLength = (MFLIMIT+1);
 /*-************************************
 *  Error detection
 **************************************/
-#define LZ4r_DEBUG 10  // added
+//#define LZ4r_DEBUG 10  // added
 //#define CntMatchLength  // added
 #if defined(LZ4r_DEBUG) && (LZ4r_DEBUG>=1)
 #  include <assert.h>
@@ -1019,13 +1019,13 @@ LZ4r_FORCE_INLINE int LZ4r_compress_generic_validated(
         const BYTE* match;
         BYTE* token;
         const BYTE* filledIp;
-        unsigned matchCode; // matchCode是实际ml-4,由于有m_flag,处理时记得额外加减1。默认编码到token的低2位
-        unsigned litLength; // litLength是实际ll,由于有l_flag,处理时记得额外加减1。默认编码到token的低3~5位
-        size_t off; // off 是offset大小,主循环外定义的offset变量是只在maybe_extMem=1时使用的原有变量,我们不需要使用
+        unsigned matchCode; // matchCode是实际ml-4,由于有m_flag,处理时记得额外加�?1。默认编码到token的低2�?
+        unsigned litLength; // litLength是实际ll,由于有l_flag,处理时记得额外加�?1。默认编码到token的低3~5�?
+        size_t off; // off 是offset大小,主循环外定义的offset变量是只在maybe_extMem=1时使用的原有变量,我们不需要使�?
         /*
-        - l_flag：为1表示ll=0,反之非0
-        - m_flag：为1表示ml=0,反之非0
-        - o_flag：为1表示offset相对小，只需要额外一个字节；为0表示大，必须要额外两个字节，具体是大还是小要看l_flag和m_flag的值
+        - l_flag：为1表示ll=0,反之�?0
+        - m_flag：为1表示ml=0,反之�?0
+        - o_flag：为1表示offset相对小，只需要额外一个字节；�?0表示大，必须要额外两个字节，具体是大还是小要看l_flag和m_flag的�?
         */
         BYTE l_f=0, m_f=0, o_f=0;
 
@@ -1188,7 +1188,7 @@ _next_match:
             if(!m_f){
                 o_f = (off >= 256)?0:1;
             }else{
-                o_f = (off >= 2048)?0:1;
+                o_f = (off >= 1024)?0:1;
             }
         }else{
             if(!m_f){
@@ -2180,7 +2180,7 @@ LZ4r_decompress_generic(
 
 
         /* Set up the "end" pointers for the shortcut. */
-        const BYTE* shortiend = iend - 14 /*maxLL*/ - 2 /*offset*/; // 这里计算不对，后面再改
+        const BYTE* shortiend = iend - 14 /*maxLL*/ - 2 /*offset*/; // 这里计算不对，后面再�?
         const BYTE* shortoend = oend - 14 /*maxLL*/ - 10 /*maxML*/;
 
         const BYTE* match;
@@ -2330,9 +2330,17 @@ LZ4r_decompress_generic(
                     if (offset >= 8) {
                         assert(match >= lowPrefix);
                         assert(match <= op);
-                        assert(op + (extml+2) <= oend);
-                        LZ4r_memcpy(op + 0, match + 0, extml); 
-                        LZ4r_memcpy(op + extml, match + extml, 2);
+                        assert(op + (extml+4+2) <= oend);
+                        //LZ4r_memcpy(op + 0, match + 0, extml); 
+                        //LZ4r_memcpy(op + extml, match + extml, 2);
+                        if(extml == 4){
+                            LZ4r_memcpy(op, match, 8); 
+                            LZ4r_memcpy(op +8, match + 8, 2);
+                        }else{
+                            LZ4r_memcpy(op, match, 36);
+                            LZ4r_memcpy(op +36, match + 36, 2);
+                        }
+                        
                         //LZ4r_memcpy(op, match, 8);
                         //LZ4r_memcpy(op+8, match+8, 8);
                         //LZ4r_memcpy(op+16, match+16, 2);
@@ -2460,7 +2468,7 @@ LZ4r_decompress_generic(
                 /* strictly "less than" on input, to re-enter the loop with at least one byte */
               && likely((ip < shortiend) & (op <= shortoend)) ) {
                 /* Copy the literals */
-                LZ4r_memcpy(op, ip, ext); // 这种地方可以多copy但绝不能少copy。
+                LZ4r_memcpy(op, ip, ext); // 这种地方可以多copy但绝不能少copy
                 op += length; 
                 ip += length;
 
@@ -2517,8 +2525,13 @@ LZ4r_decompress_generic(
                     DEBUGLOG(7, "blockPos%6u: matchLength token = %u (len=%u)", (unsigned)(op-(BYTE*)dst), (unsigned)length, (unsigned)length + 4);
                     DEBUGLOG(8, "Test ^^^: length + MINMATCH= %u ", (unsigned)(cpy-op));
                     /* Copy the match. */
-                    LZ4r_memcpy(op + 0, match + 0, extml); 
-                    LZ4r_memcpy(op + extml, match + extml, 2);
+                    if(extml == 4){
+                        LZ4r_memcpy(op, match, 8); 
+                        LZ4r_memcpy(op +8, match + 8, 2);
+                    }else{
+                        LZ4r_memcpy(op, match, 36);
+                        LZ4r_memcpy(op +36, match + 36, 2);
+                    }
                     op += length + MINMATCH;
                     /* Both stages worked, load the next token. */
                     continue;
